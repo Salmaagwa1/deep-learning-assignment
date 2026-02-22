@@ -1,0 +1,128 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[ ]:
+
+
+import tensorflow as tf
+import tensorflow_datasets as tfds
+
+IMG_SIZE = 224
+BATCH = 32
+
+(ds_train, ds_test), info = tfds.load(
+    "rock_paper_scissors",
+    split=["train", "test"],
+    as_supervised=True,
+    with_info=True
+)
+
+num_classes = info.features["label"].num_classes
+print("classes:", num_classes)
+
+# preprocessing
+def preprocess(img, label):
+    img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE))
+    img = tf.cast(img, tf.float32) / 255.0
+    return img, label
+
+ds_train = (ds_train
+            .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE)
+            .shuffle(1000)
+            .batch(BATCH)
+            .prefetch(tf.data.AUTOTUNE))
+
+ds_test = (ds_test
+           .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE)
+           .batch(BATCH)
+           .prefetch(tf.data.AUTOTUNE))
+
+
+# In[ ]:
+
+
+from tensorflow.keras import layers, models
+from tensorflow.keras.applications import MobileNetV2
+
+base = MobileNetV2(weights="imagenet", include_top=False, input_shape=(IMG_SIZE, IMG_SIZE, 3))
+base.trainable = False  # Freeze
+
+inputs = tf.keras.Input(shape=(IMG_SIZE, IMG_SIZE, 3))
+x = base(inputs, training=False)
+x = layers.GlobalAveragePooling2D()(x)
+x = layers.Dropout(0.2)(x)
+outputs = layers.Dense(num_classes, activation="softmax")(x)
+model = models.Model(inputs, outputs)
+
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(1e-4),
+    loss="sparse_categorical_crossentropy",
+    metrics=["accuracy"]
+)
+
+history1 = model.fit(ds_train, validation_data=ds_test, epochs=5)
+
+
+# In[ ]:
+
+
+base.trainable = True
+
+for layer in base.layers[:-20]:
+    layer.trainable = False
+
+
+# In[ ]:
+
+
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
+    loss="sparse_categorical_crossentropy",
+    metrics=["accuracy"]
+)
+
+
+# In[ ]:
+
+
+callbacks = [
+    tf.keras.callbacks.EarlyStopping(
+        monitor="val_loss", patience=3, restore_best_weights=True
+    ),
+    tf.keras.callbacks.ReduceLROnPlateau(
+        monitor="val_loss", factor=0.2, patience=2, min_lr=1e-7
+    )
+]
+
+
+# In[ ]:
+
+
+history2 = model.fit(
+    ds_train,
+    validation_data=ds_test,
+    epochs=10,
+    callbacks=callbacks
+)
+
+
+# In[ ]:
+
+
+test_loss, test_acc = model.evaluate(ds_test)
+print("Test accuracy:", test_acc)
+print("Test loss:", test_loss)
+
+
+# In[ ]:
+
+
+import numpy as np
+from sklearn.metrics import confusion_matrix, classification_report
+
+y_true = np.concatenate([y for x, y in ds_test], axis=0)
+y_pred = np.argmax(model.predict(ds_test), axis=1)
+
+print(confusion_matrix(y_true, y_pred))
+print(classification_report(y_true, y_pred))
+
